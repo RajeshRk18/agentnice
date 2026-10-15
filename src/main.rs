@@ -19,6 +19,8 @@ usage: agentnice <command>
 
   daemon [--low PCT] [--normal PCT] [--gap SECS] [--max-wait SECS]
              run the scheduler (defaults: 80, 95, 3, 18600)
+  hook       Claude Code hook for SessionStart, UserPromptSubmit and
+             PreToolUse. Set AGENTNICE_PRIORITY=low|normal|high per session.
   statusline Claude Code statusLine command: saves rate limits
   status     print what the daemon sees";
 
@@ -26,6 +28,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("daemon") => run_daemon(&args[1..]),
+        Some("hook") => hook(),
         Some("statusline") => statusline(),
         Some("status") => status(),
         _ => {
@@ -138,4 +141,51 @@ fn status() -> io::Result<()> {
         serde_json::to_string_pretty(&reply).expect("Value serializes")
     );
     Ok(())
+}
+
+/// Waits while the daemon holds this session. If no daemon runs, it does
+/// nothing: a dead scheduler must never block work.
+fn hook() -> io::Result<()> {
+    let event = read_stdin_json()?;
+    let priority = env::var("AGENTNICE_PRIORITY").unwrap_or_else(|_| "normal".into());
+    if gate::Priority::parse(&priority).is_none() {
+        return Err(io::Error::other(format!(
+            "AGENTNICE_PRIORITY={priority:?}: use low, normal or high"
+        )));
+    }
+    // A start is about to call the API, so it waits for a slot in the line.
+    let paced = matches!(
+        event["hook_event_name"].as_str(),
+        Some("SessionStart" | "UserPromptSubmit")
+    );
+    let Ok(conn) = UnixStream::connect(sock_path()?) else {
+        return Ok(());
+    };
+    let reply = ask(
+        &conn,
+        json!({ "op": "acquire", "priority": priority, "paced": paced }),
+    )?;
+    if let Some(e) = reply.get("error") {
+        return Err(io::Error::other(format!("daemon: {e}")));
+    }
+    if reply["go"] == false {
+        let left = reply["until"].as_u64().unwrap_or(0).saturating_sub(now_s());
+        let reason = format!(
+            "agentnice: {priority} session stopped. {} quota is at {:.0}%. It resets in {}.",
+            reply["window"].as_str().unwrap_or("?"),
+            reply["used"].as_f64().unwrap_or(0.0),
+            human(left),
+        );
+        println!("{}", json!({ "continue": false, "stopReason": reason }));
+    }
+    Ok(())
+}
+
+fn human(secs: u64) -> String {
+    let (d, h, m) = (secs / 86400, secs % 86400 / 3600, secs % 3600 / 60);
+    match (d, h) {
+        (0, 0) => format!("{m}m"),
+        (0, _) => format!("{h}h {m}m"),
+        _ => format!("{d}d {h}h"),
+    }
 }
