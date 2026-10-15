@@ -1,22 +1,33 @@
 //! agentnice: one quota scheduler for all Claude Code sessions on a machine.
 
+mod daemon;
+mod gate;
 mod usage;
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
     env,
-    io::{self, Read},
+    io::{self, BufRead, BufReader, Read, Write},
+    os::unix::net::UnixStream,
     path::PathBuf,
     process::ExitCode,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const USAGE: &str = "usage: agentnice statusline";
+const USAGE: &str = "\
+usage: agentnice <command>
+
+  daemon [--low PCT] [--normal PCT] [--gap SECS] [--max-wait SECS]
+             run the scheduler (defaults: 80, 95, 3, 18600)
+  statusline Claude Code statusLine command: saves rate limits
+  status     print what the daemon sees";
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
+        Some("daemon") => run_daemon(&args[1..]),
         Some("statusline") => statusline(),
+        Some("status") => status(),
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);
@@ -43,6 +54,14 @@ fn config_dir() -> io::Result<PathBuf> {
 
 fn usage_path() -> io::Result<PathBuf> {
     Ok(config_dir()?.join("abtop-rate-limits.json"))
+}
+
+/// `$AGENTNICE_SOCK`, or `agentnice.sock` in the config dir.
+fn sock_path() -> io::Result<PathBuf> {
+    match env::var_os("AGENTNICE_SOCK") {
+        Some(p) => Ok(p.into()),
+        None => Ok(config_dir()?.join("agentnice.sock")),
+    }
 }
 
 fn now_s() -> u64 {
@@ -74,5 +93,49 @@ fn statusline() -> io::Result<()> {
         })
         .collect();
     println!("{}", parts.join(" · "));
+    Ok(())
+}
+
+fn run_daemon(args: &[String]) -> io::Result<()> {
+    let mut cfg = gate::Config::default();
+    for pair in args.chunks(2) {
+        let [flag, value] = pair else {
+            return Err(io::Error::other(format!("{} needs a value", pair[0])));
+        };
+        let num = |what: &str| {
+            value
+                .parse::<f64>()
+                .ok()
+                .filter(|n| *n >= 0.0)
+                .ok_or_else(|| io::Error::other(format!("{flag}: {value:?} is not {what}")))
+        };
+        match flag.as_str() {
+            "--low" => cfg.caps[0] = num("a percent")?,
+            "--normal" => cfg.caps[1] = num("a percent")?,
+            "--gap" => cfg.gap_ms = (num("a number of seconds")? * 1000.0) as u64,
+            "--max-wait" => cfg.max_wait_s = num("a number of seconds")? as u64,
+            _ => return Err(io::Error::other(format!("unknown flag {flag}\n{USAGE}"))),
+        }
+    }
+    daemon::run(&sock_path()?, usage_path()?, cfg)
+}
+
+/// Sends one request and reads one reply line.
+fn ask(conn: &UnixStream, req: Value) -> io::Result<Value> {
+    writeln!(&*conn, "{req}")?;
+    let mut line = String::new();
+    BufReader::new(conn).read_line(&mut line)?;
+    serde_json::from_str(&line).map_err(|e| io::Error::other(format!("bad reply: {e}")))
+}
+
+fn status() -> io::Result<()> {
+    let sock = sock_path()?;
+    let conn = UnixStream::connect(&sock)
+        .map_err(|e| io::Error::other(format!("no daemon on {}: {e}", sock.display())))?;
+    let reply = ask(&conn, json!({ "op": "status" }))?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&reply).expect("Value serializes")
+    );
     Ok(())
 }

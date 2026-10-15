@@ -31,6 +31,18 @@ pub fn parse(v: &Value) -> Vec<Window> {
         .collect()
 }
 
+/// Reads the file. No file means no data yet, which is not an error.
+pub fn read(path: &Path) -> io::Result<Vec<Window>> {
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let v: Value = serde_json::from_str(&text)
+        .map_err(|e| io::Error::other(format!("{}: {e}", path.display())))?;
+    Ok(parse(&v))
+}
+
 /// Writes the file. It writes a temp file and renames it, so a reader
 /// never sees half a file.
 pub fn write(path: &Path, windows: &[Window], now: u64) -> io::Result<()> {
@@ -65,5 +77,28 @@ mod tests {
                 resets_at: 1738425600
             }]
         );
+    }
+
+    #[test]
+    fn write_then_read_gives_the_same_windows() {
+        let dir = std::env::temp_dir().join(format!("agentnice-usage-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("abtop-rate-limits.json");
+        assert!(read(&path).unwrap().is_empty());
+        let w = [
+            Window {
+                name: "five_hour",
+                used: 80.0,
+                resets_at: 100,
+            },
+            Window {
+                name: "seven_day",
+                used: 12.5,
+                resets_at: 900,
+            },
+        ];
+        write(&path, &w, 50).unwrap();
+        assert_eq!(read(&path).unwrap(), w);
+        fs::remove_dir_all(dir).unwrap();
     }
 }
