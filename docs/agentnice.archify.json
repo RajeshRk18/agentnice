@@ -1,0 +1,198 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "How agentnice holds a session",
+    "locale": "en",
+    "viewBox": [
+      1080,
+      512
+    ],
+    "column_fit": "spread",
+    "quality_profile": "showcase"
+  },
+  "participants": [
+    {
+      "id": "claude",
+      "type": "frontend",
+      "label": "Claude Code",
+      "sublabel": "one session"
+    },
+    {
+      "id": "hook",
+      "type": "backend",
+      "label": "hook",
+      "sublabel": "agentnice hook"
+    },
+    {
+      "id": "daemon",
+      "type": "security",
+      "label": "daemon",
+      "sublabel": "agentnice daemon"
+    },
+    {
+      "id": "file",
+      "type": "database",
+      "label": "rate-limits file",
+      "sublabel": "abtop format"
+    },
+    {
+      "id": "statusline",
+      "type": "backend",
+      "label": "statusline",
+      "sublabel": "agentnice statusline"
+    }
+  ],
+  "segments": [
+    {
+      "from": 150,
+      "to": 212,
+      "label": "Save the quota"
+    },
+    {
+      "from": 218,
+      "to": 334,
+      "label": "Ask for a turn"
+    },
+    {
+      "from": 340,
+      "to": 390,
+      "label": "Held to the reset"
+    },
+    {
+      "from": 396,
+      "to": 446,
+      "label": "Reset too far"
+    }
+  ],
+  "messages": [
+    {
+      "from": "claude",
+      "to": "statusline",
+      "y": 170,
+      "label": "rate_limits JSON",
+      "variant": "emphasis"
+    },
+    {
+      "from": "statusline",
+      "to": "file",
+      "y": 198,
+      "label": "temp file + rename",
+      "variant": "emphasis"
+    },
+    {
+      "from": "claude",
+      "to": "hook",
+      "y": 238,
+      "label": "hook event JSON",
+      "variant": "emphasis"
+    },
+    {
+      "from": "hook",
+      "to": "daemon",
+      "y": 266,
+      "label": "acquire, priority low",
+      "variant": "emphasis"
+    },
+    {
+      "from": "daemon",
+      "to": "file",
+      "y": 294,
+      "label": "read usage each second",
+      "variant": "default"
+    },
+    {
+      "from": "file",
+      "to": "daemon",
+      "y": 322,
+      "label": "5h at 85%, cap 80%",
+      "variant": "return"
+    },
+    {
+      "from": "daemon",
+      "to": "hook",
+      "y": 354,
+      "label": "go: true at the reset",
+      "variant": "return"
+    },
+    {
+      "from": "hook",
+      "to": "claude",
+      "y": 382,
+      "label": "exit 0, tool runs",
+      "variant": "return"
+    },
+    {
+      "from": "daemon",
+      "to": "hook",
+      "y": 410,
+      "label": "go: false, 7d cap",
+      "variant": "security"
+    },
+    {
+      "from": "hook",
+      "to": "claude",
+      "y": 429,
+      "label": "continue: false + reason",
+      "variant": "security"
+    }
+  ],
+  "activations": [
+    {
+      "participant": "statusline",
+      "from": 164,
+      "to": 206,
+      "type": "backend"
+    },
+    {
+      "participant": "hook",
+      "from": 232,
+      "to": 388,
+      "type": "backend"
+    },
+    {
+      "participant": "daemon",
+      "from": 260,
+      "to": 360,
+      "type": "security"
+    },
+    {
+      "participant": "daemon",
+      "from": 404,
+      "to": 416,
+      "type": "security"
+    },
+    {
+      "participant": "hook",
+      "from": 404,
+      "to": 435,
+      "type": "backend"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Caps by priority",
+      "items": [
+        "low waits at 80%, normal at 95%, high at 100%",
+        "A wait longer than 5h10m stops the session"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "One start at a time",
+      "items": [
+        "Starts and waiters leave 3 s apart, high first",
+        "Stops the burst after a reset (claude-code#53922)"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Fails open",
+      "items": [
+        "No daemon: the hook exits 0 and prints nothing",
+        "abtop's status line writes the same file"
+      ]
+    }
+  ]
+}
